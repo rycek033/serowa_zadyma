@@ -2,6 +2,8 @@ extends CanvasLayer
 
 var score: int = 0
 var score_label: Label
+var combo_banner_label: Label
+var combo_banner_tween: Tween
 
 func _spawn_floating_text(text: String, pos: Vector2, color: Color, size: int = 36):
 	var label = Label.new()
@@ -64,30 +66,37 @@ func show_combo_result(multiplier: int, pos: Vector2):
 
 func _spawn_centered_combo_banner(text: String, color: Color):
 	var viewport_size = get_viewport().get_visible_rect().size
-	var label = Label.new()
-	label.text = text
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	label.position = Vector2(0, viewport_size.y * 0.42)
-	label.size = Vector2(viewport_size.x, 120)
-	label.modulate = Color(color.r, color.g, color.b, 0.0)
-	label.add_theme_font_size_override("font_size", 76)
-	label.add_theme_constant_override("outline_size", 12)
-	label.add_theme_color_override("font_outline_color", Color(0.08, 0.05, 0.02, 0.95))
-	label.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.55))
-	label.add_theme_constant_override("shadow_offset_x", 3)
-	label.add_theme_constant_override("shadow_offset_y", 3)
-	add_child(label)
+	if combo_banner_tween != null:
+		combo_banner_tween.kill()
 
-	var tween = get_tree().create_tween()
-	tween.set_parallel(true)
-	tween.tween_property(label, "modulate:a", 1.0, 0.15).set_trans(Tween.TRANS_SINE)
-	tween.tween_property(label, "scale", Vector2(1.12, 1.12), 0.15).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "scale", Vector2(1.0, 1.0), 0.12).set_trans(Tween.TRANS_SINE)
-	tween.tween_property(label, "position:y", label.position.y - 24.0, 0.65).set_delay(0.12).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
-	tween.tween_property(label, "modulate:a", 0.0, 0.5).set_delay(0.35).set_trans(Tween.TRANS_SINE)
-	await tween.finished
-	label.queue_free()
+	if combo_banner_label != null and is_instance_valid(combo_banner_label):
+		combo_banner_label.queue_free()
+
+	combo_banner_label = Label.new()
+	combo_banner_label.text = text
+	combo_banner_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	combo_banner_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	combo_banner_label.position = Vector2(0, viewport_size.y * 0.42)
+	combo_banner_label.size = Vector2(viewport_size.x, 120)
+	combo_banner_label.modulate = Color(color.r, color.g, color.b, 0.0)
+	combo_banner_label.add_theme_font_size_override("font_size", 76)
+	combo_banner_label.add_theme_constant_override("outline_size", 12)
+	combo_banner_label.add_theme_color_override("font_outline_color", Color(0.08, 0.05, 0.02, 0.95))
+	combo_banner_label.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.55))
+	combo_banner_label.add_theme_constant_override("shadow_offset_x", 3)
+	combo_banner_label.add_theme_constant_override("shadow_offset_y", 3)
+	add_child(combo_banner_label)
+
+	combo_banner_tween = get_tree().create_tween()
+	combo_banner_tween.tween_property(combo_banner_label, "modulate:a", 1.0, 0.12).set_trans(Tween.TRANS_SINE)
+	combo_banner_tween.tween_interval(0.55)
+	combo_banner_tween.tween_property(combo_banner_label, "modulate:a", 0.0, 0.35).set_trans(Tween.TRANS_SINE)
+	await combo_banner_tween.finished
+
+	if combo_banner_label != null and is_instance_valid(combo_banner_label):
+		combo_banner_label.queue_free()
+	combo_banner_label = null
+	combo_banner_tween = null
 
 func show_event_text(text: String, pos: Vector2, color: Color = Color(1.0, 0.7, 0.2)):
 	_spawn_floating_text(text, pos, color, 32)
