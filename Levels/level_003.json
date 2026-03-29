@@ -1,0 +1,27 @@
+{
+  "level_id": 3,
+  "grid_width": 8,
+  "grid_height": 8,
+  "moves": 22,
+  "active_colors": 5,
+  "goal": {
+    "type": "bring_down",
+    "target": 2
+  },
+  "stars": [1000, 1900, 3000],
+  "tutorial": {
+    "id": "goal_bring_down",
+    "title": "Tutorial: Dostawa",
+    "body": "Sery oznaczone znacznikiem muszą spaść na sam dół planszy. Czyść pola pod nimi, aby je sprowadzić."
+  },
+  "layout": [
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1]
+  ]
+}

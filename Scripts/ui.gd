@@ -4,6 +4,9 @@ var score: int = 0
 var score_label: Label
 var moves_label: Label
 var goal_label: Label
+var stars_container: HBoxContainer
+var star_labels: Array[Label] = []
+var star_thresholds: Array[int] = [600, 1400, 2600]
 var result_overlay: ColorRect
 var result_panel: Panel
 var result_title: Label
@@ -13,6 +16,12 @@ var result_tween: Tween
 var tutorial_panel: Panel
 var tutorial_title: Label
 var tutorial_body: Label
+var tutorial_marker_a: Panel
+var tutorial_marker_b: Panel
+var hint_marker_a: Panel
+var hint_marker_b: Panel
+var board_origin_cached: Vector2 = Vector2.ZERO
+var board_pixel_size_cached: Vector2 = Vector2.ZERO
 var combo_banner_label: Label
 var combo_banner_tween: Tween
 
@@ -37,6 +46,20 @@ func _ready():
 	score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	score_label.text = "Wynik: 0"
 	add_child(score_label)
+
+	stars_container = HBoxContainer.new()
+	stars_container.alignment = BoxContainer.ALIGNMENT_CENTER
+	stars_container.add_theme_constant_override("separation", 14)
+	add_child(stars_container)
+
+	for i in 3:
+		var star = Label.new()
+		star.text = "★"
+		star.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		star.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		star.add_theme_font_size_override("font_size", 36)
+		stars_container.add_child(star)
+		star_labels.append(star)
 
 	moves_label = Label.new()
 	moves_label.add_theme_font_size_override("font_size", 32)
@@ -83,11 +106,50 @@ func _setup_tutorial_popup():
 
 	tutorial_body = Label.new()
 	tutorial_body.position = Vector2(14, 44)
-	tutorial_body.size = Vector2(292, 74)
+	tutorial_body.size = Vector2(332, 112)
 	tutorial_body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	tutorial_body.add_theme_font_size_override("font_size", 20)
 	tutorial_body.add_theme_color_override("font_color", Color(0.95, 0.95, 0.95))
 	tutorial_panel.add_child(tutorial_body)
+
+	tutorial_marker_a = _create_flash_marker(Color(1.0, 0.85, 0.25, 1.0))
+	tutorial_marker_b = _create_flash_marker(Color(1.0, 0.85, 0.25, 1.0))
+	add_child(tutorial_marker_a)
+	add_child(tutorial_marker_b)
+
+	hint_marker_a = _create_flash_marker(Color(0.55, 0.95, 1.0, 1.0))
+	hint_marker_b = _create_flash_marker(Color(0.55, 0.95, 1.0, 1.0))
+	add_child(hint_marker_a)
+	add_child(hint_marker_b)
+
+func _create_flash_marker(color: Color) -> Panel:
+	var marker = Panel.new()
+	marker.visible = false
+	marker.size = Vector2(56, 56)
+	marker.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(color.r, color.g, color.b, 0.08)
+	style.border_color = color
+	style.border_width_left = 3
+	style.border_width_top = 3
+	style.border_width_right = 3
+	style.border_width_bottom = 3
+	style.corner_radius_top_left = 8
+	style.corner_radius_top_right = 8
+	style.corner_radius_bottom_left = 8
+	style.corner_radius_bottom_right = 8
+	marker.add_theme_stylebox_override("panel", style)
+	return marker
+
+func _process(_delta: float):
+	var t = Time.get_ticks_msec() * 0.001
+	var pulse = 0.5 + 0.5 * sin(t * 6.0)
+	var markers = [tutorial_marker_a, tutorial_marker_b, hint_marker_a, hint_marker_b]
+	for marker in markers:
+		if marker != null and marker.visible:
+			marker.modulate.a = 0.35 + pulse * 0.6
+			var s = 0.94 + pulse * 0.12
+			marker.scale = Vector2(s, s)
 
 func _setup_level_result_popup():
 	result_overlay = ColorRect.new()
@@ -146,20 +208,26 @@ func _setup_level_result_popup():
 func update_layout(viewport_size: Vector2, board_origin: Vector2 = Vector2.ZERO, board_pixel_size: Vector2 = Vector2.ZERO):
 	if score_label == null:
 		return
-	if moves_label == null or goal_label == null or result_overlay == null or tutorial_panel == null:
+	if moves_label == null or goal_label == null or result_overlay == null or tutorial_panel == null or stars_container == null:
 		return
 
-	var score_y = 24.0
-	if board_pixel_size != Vector2.ZERO:
-		score_y = board_origin.y + board_pixel_size.y + 18.0
+	board_origin_cached = board_origin
+	board_pixel_size_cached = board_pixel_size
 
-	score_label.position = Vector2(0, score_y)
+	score_label.position = Vector2(0, 18)
 	score_label.size = Vector2(viewport_size.x, 56)
 
-	goal_label.position = Vector2(0, 20)
+	stars_container.position = Vector2(0, 62)
+	stars_container.size = Vector2(viewport_size.x, 42)
+
+	goal_label.position = Vector2(0, 102)
 	goal_label.size = Vector2(viewport_size.x, 42)
 
-	moves_label.position = Vector2(0, 58)
+	var moves_y = viewport_size.y - 54.0
+	if board_pixel_size != Vector2.ZERO:
+		moves_y = board_origin.y + board_pixel_size.y + 14.0
+
+	moves_label.position = Vector2(0, moves_y)
 	moves_label.size = Vector2(viewport_size.x, 42)
 
 	result_overlay.position = Vector2.ZERO
@@ -179,16 +247,32 @@ func update_layout(viewport_size: Vector2, board_origin: Vector2 = Vector2.ZERO,
 	result_hint.size = Vector2(result_panel.size.x - 56, 40)
 
 	if tutorial_panel.visible:
-		tutorial_panel.position.x = clampf(tutorial_panel.position.x, 10.0, viewport_size.x - tutorial_panel.size.x - 10.0)
-		tutorial_panel.position.y = clampf(tutorial_panel.position.y, 10.0, viewport_size.y - tutorial_panel.size.y - 10.0)
+		_position_tutorial_panel()
 
 func add_score(points: int):
 	score += points
 	score_label.text = "Wynik: " + str(score)
+	update_star_progress()
 
 func reset_score(new_value: int = 0):
 	score = max(0, new_value)
 	score_label.text = "Wynik: " + str(score)
+	update_star_progress()
+
+func set_star_thresholds(star_1: int, star_2: int, star_3: int):
+	star_thresholds = [maxi(1, star_1), maxi(1, star_2), maxi(1, star_3)]
+	update_star_progress()
+
+func update_star_progress():
+	if star_labels.size() < 3:
+		return
+
+	for i in 3:
+		var threshold = star_thresholds[i]
+		var progress = clampf(float(score) / float(threshold), 0.0, 1.0)
+		var base_color = Color(0.34, 0.34, 0.38, 0.9)
+		var fill_color = Color(1.0, 0.88, 0.26, 1.0)
+		star_labels[i].modulate = base_color.lerp(fill_color, progress)
 
 func set_moves_left(value: int):
 	moves_label.text = "Ruchy: " + str(maxi(0, value))
@@ -208,7 +292,7 @@ func show_level_result(win: bool, stars: int, final_score: int):
 	result_title.text = header
 	result_title.modulate = color
 	result_details.text = "Gwiazdki: " + str(stars) + "\nWynik: " + str(final_score)
-	result_hint.text = "Tapnij, aby kontynuować" if win else "Spróbuj ponownie"
+	result_hint.text = "Tapnij, aby wrócić do mapy" if win else "Tapnij, aby wrócić i spróbować ponownie"
 
 	result_overlay.visible = true
 	result_overlay.color = Color(0.0, 0.0, 0.0, 0.0)
@@ -228,18 +312,48 @@ func hide_level_result():
 	if result_overlay != null:
 		result_overlay.visible = false
 
-func show_tutorial_hint(title: String, body: String, anchor_screen_pos: Vector2):
+func _position_tutorial_panel():
+	if tutorial_panel == null:
+		return
+	var viewport_size = get_viewport().get_visible_rect().size
+	var margin = 10.0
+
+	var right_space = viewport_size.x - (board_origin_cached.x + board_pixel_size_cached.x)
+	var left_space = board_origin_cached.x
+
+	if right_space >= tutorial_panel.size.x + margin:
+		tutorial_panel.position = Vector2(viewport_size.x - tutorial_panel.size.x - margin, 154)
+	elif left_space >= tutorial_panel.size.x + margin:
+		tutorial_panel.position = Vector2(margin, 154)
+	else:
+		tutorial_panel.position = Vector2((viewport_size.x - tutorial_panel.size.x) * 0.5, 154)
+
+	tutorial_panel.position.x = clampf(tutorial_panel.position.x, margin, viewport_size.x - tutorial_panel.size.x - margin)
+	tutorial_panel.position.y = clampf(tutorial_panel.position.y, margin, viewport_size.y - tutorial_panel.size.y - margin)
+
+func _place_marker(marker: Panel, screen_pos: Vector2):
+	if marker == null:
+		return
+	marker.position = screen_pos - marker.size * 0.5
+	marker.visible = true
+
+func show_tutorial_hint(title: String, body: String, _anchor_screen_pos: Vector2, move_a: Vector2 = Vector2(-1, -1), move_b: Vector2 = Vector2(-1, -1)):
 	if tutorial_panel == null:
 		return
 
 	tutorial_title.text = title
 	tutorial_body.text = body
-	tutorial_panel.size = Vector2(320, 126)
-	tutorial_panel.position = anchor_screen_pos + Vector2(-160, -150)
-	var viewport_size = get_viewport().get_visible_rect().size
-	tutorial_panel.position.x = clampf(tutorial_panel.position.x, 10.0, viewport_size.x - tutorial_panel.size.x - 10.0)
-	tutorial_panel.position.y = clampf(tutorial_panel.position.y, 10.0, viewport_size.y - tutorial_panel.size.y - 10.0)
+	tutorial_panel.size = Vector2(360, 176)
+	tutorial_title.size = Vector2(332, 38)
+	tutorial_body.size = Vector2(332, 120)
+	_position_tutorial_panel()
 	tutorial_panel.visible = true
+
+	tutorial_marker_a.visible = false
+	tutorial_marker_b.visible = false
+	if move_a.x >= 0 and move_b.x >= 0:
+		_place_marker(tutorial_marker_a, move_a)
+		_place_marker(tutorial_marker_b, move_b)
 
 	var tween = get_tree().create_tween()
 	tutorial_panel.modulate = Color(1, 1, 1, 0)
@@ -248,6 +362,23 @@ func show_tutorial_hint(title: String, body: String, anchor_screen_pos: Vector2)
 func hide_tutorial_hint():
 	if tutorial_panel != null:
 		tutorial_panel.visible = false
+	if tutorial_marker_a != null:
+		tutorial_marker_a.visible = false
+	if tutorial_marker_b != null:
+		tutorial_marker_b.visible = false
+
+func is_tutorial_hint_visible() -> bool:
+	return tutorial_panel != null and tutorial_panel.visible
+
+func show_hint_move(move_a: Vector2, move_b: Vector2):
+	_place_marker(hint_marker_a, move_a)
+	_place_marker(hint_marker_b, move_b)
+
+func hide_hint_move():
+	if hint_marker_a != null:
+		hint_marker_a.visible = false
+	if hint_marker_b != null:
+		hint_marker_b.visible = false
 
 func show_combo(multiplier: int, pos: Vector2):
 	if multiplier < 2:

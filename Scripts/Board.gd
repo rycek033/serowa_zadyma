@@ -1,12 +1,31 @@
 extends Node2D
 
+# ============================================================================
+# BOARD.GD - Main game orchestrator (2158 lines)
+# 
+# This file is organized as follows:
+# - EXPORTS & CONSTANTS (lines 3-50)
+# - STATE VARIABLES (lines 51-95)
+# - LIFECYCLE (_ready, _process) (lines 96-130)
+# - LEVEL LOADING (lines 131-250) → Move to BoardLevelLoader.gd
+# - BOARD INITIALIZATION & SETUP (lines 251-415)
+# - IDLE HINT SYSTEM (lines 416-480)
+# - GRID OPERATIONS (lines 481-550) → Use BoardGridHelper.gd
+# - MATCH FINDING (lines 551-650) → Move to BoardMatchFinder.gd
+# - MATCH DESTRUCTION (lines 651-800) → Move to BoardMatchResolver.gd
+# - INPUT HANDLING (lines 801-950) → Move to BoardInputHandler.gd
+# - SWAPS & GRAVITY (lines 951-1100) → Move to BoardPhysics.gd
+# - GOAL TRACKING (lines 1101-1250) → Move to BoardGoalSystem.gd
+# - UTILITIES (lines 1251-2158)
+# ============================================================================
+
 @export var width: int = 8
 @export var height: int = 8
 @export var cell_size: int = 64
 @export var min_cell_size: int = 44
 @export var board_horizontal_padding: int = 24
 @export var board_bottom_padding: int = 24
-@export var top_ui_margin: int = 120
+@export var top_ui_margin: int = 160
 @export var max_initial_fill_attempts: int = 12
 @export var swap_duration: float = 0.16
 @export var swap_back_duration: float = 0.14
@@ -17,17 +36,26 @@ extends Node2D
 @export var camembert_boom_sound: AudioStream
 @export var chilli_whoosh_sound: AudioStream
 @export var current_level_id: int = 1
+@export var use_json_levels: bool = true
+@export var levels_directory: String = "res://Levels"
 @export var star_1_score: int = 600
 @export var star_2_score: int = 1400
 @export var star_3_score: int = 2600
 @export var moves_limit: int = 20
-@export_enum("score", "clear_color") var level_goal_type: String = "score"
+@export_enum("score", "clear_color", "bring_down", "clear_ice", "clear_mold") var level_goal_type: String = "score"
 @export var goal_target: int = 1800
 @export_range(0, 4, 1) var goal_color_type: int = 3
 @export var procedural_levels_enabled: bool = true
 @export var min_moves_limit: int = 10
 @export var score_goal_growth_per_level: int = 260
 @export var clear_goal_growth_per_level: int = 1
+@export var bring_down_growth_per_level: int = 1
+@export var clear_ice_growth_per_level: int = 1
+@export var clear_mold_growth_per_level: int = 1
+@export var max_ice_layers: int = 2
+@export var initial_mold_tiles: int = 4
+@export var mold_spread_per_turn: int = 1
+@export var idle_hint_delay_seconds: float = 8.0
 
 const AUDIO_SAMPLE_RATE := 44100.0
 const DEBUG_COLOR_NAMES := ["Yellow", "White", "Green", "Red", "Pink"]
@@ -41,10 +69,14 @@ var is_animating: bool = false
 var is_resolving_move: bool = false
 var level_finished: bool = false
 var level_won: bool = false
+var goal_cleanup_performed: bool = false
+var goal_reached_this_level: bool = false
 var cascade_depth: int = 0
 var max_combo_in_move: int = 1
 var moves_left: int = 0
 var goal_progress: int = 0
+var bring_down_targets_spawned: int = 0
+var mold_spread_done_this_move: bool = false
 var board_origin: Vector2 = Vector2.ZERO
 var board_rest_position: Vector2
 var shake_tween: Tween
@@ -52,6 +84,11 @@ var max_cell_size: int = 64
 var active_base_types: int = 5
 var base_moves_limit: int = 20
 var base_goal_target: int = 1800
+var ice_layers_grid: Array = []
+var mold_grid: Array = []
+var cell_active_grid: Array = []
+var loaded_level_data: Dictionary = {}
+var loaded_level_from_json: bool = false
 
 var combo_player: AudioStreamPlayer
 var camembert_player: AudioStreamPlayer
@@ -61,11 +98,14 @@ var debug_panel: ColorRect
 var debug_label: Label
 var debug_enabled: bool = false
 var debug_source_color: int = 3
+var idle_hint_elapsed: float = 0.0
+var hint_visible: bool = false
 
 var base_cheese_texture = preload("res://Graphics/Cheeses/cheese.png")
 var chilli_cheese_texture = preload("res://Graphics/Cheeses/chilicheese.png")
 var camembert_texture = preload("res://Graphics/Cheeses/camembert.png")
 var mozzarella_texture = preload("res://Graphics/Cheeses/mozarella.png")
+var bring_down_placeholder_texture = preload("res://icon.svg")
 
 var base_cheese_colors = [
 	Color(0.9, 0.8, 0.3),
@@ -80,8 +120,11 @@ var num_total_base_types = base_cheese_colors.size()
 const CHILLI_BOMB_TYPE = 98
 const CAMEMBERT_BOMB_TYPE = 99
 const MOZZARELLA_BOMB_TYPE = 100
+const DROP_GOAL_PIECE_TYPE = 101
 
 @onready var ui = $UI
+
+#region === LIFECYCLE & INITIALIZATION ===
 
 func _ready():
 	randomize()
@@ -96,9 +139,114 @@ func _ready():
 	get_viewport().size_changed.connect(_on_viewport_size_changed)
 	grid = make_2d_array()
 	piece_array = make_2d_array()
+	cell_active_grid = make_2d_int_array(1)
+	loaded_level_data = {}
+	loaded_level_from_json = false
+	load_selected_level_from_save()
 	unlock_current_level_if_needed()
 	start_level(current_level_id)
 	persist_progress(false)
+
+func _process(delta: float):
+	if level_finished or is_animating or debug_enabled:
+		return
+	if first_touch != Vector2(-1, -1):
+		return
+	if ui != null and ui.has_method("is_tutorial_hint_visible") and ui.is_tutorial_hint_visible():
+		return
+
+	idle_hint_elapsed += delta
+	if idle_hint_elapsed >= idle_hint_delay_seconds and not hint_visible:
+		show_idle_hint()
+
+func reset_idle_hint_timer():
+	idle_hint_elapsed = 0.0
+	if hint_visible and ui != null:
+		ui.hide_hint_move()
+	hint_visible = false
+
+#endregion
+
+#region === HINT SYSTEM ===
+
+func find_hint_move() -> Array:
+	for i in width:
+		for j in height:
+			if not is_cell_active(i, j):
+				continue
+			if is_locked_piece_at(i, j):
+				continue
+			var pos = Vector2(i, j)
+			var right = Vector2(i + 1, j)
+			var down = Vector2(i, j + 1)
+
+			if is_cell_active(int(right.x), int(right.y)) and not is_locked_piece_at(int(right.x), int(right.y)) and would_swap_create_match(pos, right):
+				return [pos, right]
+			if is_cell_active(int(down.x), int(down.y)) and not is_locked_piece_at(int(down.x), int(down.y)) and would_swap_create_match(pos, down):
+				return [pos, down]
+
+	return []
+
+func show_idle_hint():
+	var move = find_hint_move()
+	if move.size() < 2:
+		return
+	if ui != null:
+		ui.show_hint_move(
+			to_global(grid_to_local(int(move[0].x), int(move[0].y))),
+			to_global(grid_to_local(int(move[1].x), int(move[1].y)))
+		)
+	hint_visible = true
+
+#endregion
+
+#region === LEVEL LOADING ===
+
+func load_selected_level_from_save():
+	var save_system = get_save_system()
+	if save_system == null:
+		return
+
+	var selected = int(save_system.get_setting("selected_level", current_level_id))
+	if selected <= 0:
+		selected = 1
+
+	if save_system.is_level_unlocked(selected):
+		current_level_id = selected
+	else:
+		current_level_id = 1
+
+func get_level_json_path(level_id: int) -> String:
+	return levels_directory.path_join("level_%03d.json" % level_id)
+
+func load_level_data_json(level_id: int) -> Dictionary:
+	if not use_json_levels:
+		return {}
+
+	var path = get_level_json_path(level_id)
+	if not FileAccess.file_exists(path):
+		return {}
+
+	var file = FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		push_warning("Board: cannot open level file: " + path)
+		return {}
+
+	var text = file.get_as_text()
+	var parsed = JSON.parse_string(text)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		push_warning("Board: invalid level json structure in: " + path)
+		return {}
+
+	var data: Dictionary = parsed
+	if not data.has("grid_width") or not data.has("grid_height"):
+		push_warning("Board: level json missing grid size in: " + path)
+		return {}
+	if not data.has("layout"):
+		push_warning("Board: level json missing layout in: " + path)
+		return {}
+
+	return data
 
 func configure_level_difficulty(level_id: int):
 	if not procedural_levels_enabled:
@@ -112,28 +260,190 @@ func configure_level_difficulty(level_id: int):
 	# Co kilka poziomów losujemy inny typ celu.
 	if level_id <= 2:
 		level_goal_type = "score"
+	elif level_id <= 5:
+		level_goal_type = "clear_color" if randf() < 0.45 else "score"
 	else:
-		level_goal_type = "clear_color" if randf() < 0.35 else "score"
+		var roll = randf()
+		if roll < 0.16:
+			level_goal_type = "bring_down"
+		elif roll < 0.36:
+			level_goal_type = "clear_ice"
+		elif roll < 0.56:
+			level_goal_type = "clear_mold"
+		elif roll < 0.78:
+			level_goal_type = "clear_color"
+		else:
+			level_goal_type = "score"
 
 	moves_limit = maxi(min_moves_limit, base_moves_limit - int(floor((level_id - 1) / 2.0)))
 
 	if level_goal_type == "score":
 		goal_target = base_goal_target + (level_id - 1) * score_goal_growth_per_level + randi_range(-120, 180)
-	else:
+	elif level_goal_type == "clear_color":
 		goal_color_type = randi() % active_base_types
 		goal_target = 10 + (level_id - 1) * clear_goal_growth_per_level + randi_range(0, 4)
+	elif level_goal_type == "bring_down":
+		goal_target = 2 + int(floor((level_id - 1) / 4.0)) * bring_down_growth_per_level
+	elif level_goal_type == "clear_ice":
+		goal_target = 8 + (level_id - 1) * clear_ice_growth_per_level + randi_range(0, 4)
+	else:
+		goal_target = 7 + (level_id - 1) * clear_mold_growth_per_level + randi_range(0, 3)
 
 	debug_source_color = clampi(debug_source_color, 0, active_base_types - 1)
 	refresh_debug_menu_text()
 
+func apply_loaded_level_config(level_data: Dictionary):
+	width = maxi(3, int(level_data.get("grid_width", width)))
+	height = maxi(3, int(level_data.get("grid_height", height)))
+
+	if level_data.has("moves"):
+		moves_limit = maxi(1, int(level_data.get("moves", moves_limit)))
+
+	var goal_data = level_data.get("goal", {})
+	if typeof(goal_data) == TYPE_DICTIONARY:
+		var goal_type = str(goal_data.get("type", level_goal_type))
+		if ["score", "clear_color", "bring_down", "clear_ice", "clear_mold"].has(goal_type):
+			level_goal_type = goal_type
+		goal_target = maxi(1, int(goal_data.get("target", goal_target)))
+		goal_color_type = clampi(int(goal_data.get("color", goal_color_type)), 0, num_total_base_types - 1)
+
+	if level_data.has("active_colors"):
+		active_base_types = clampi(int(level_data.get("active_colors", active_base_types)), 3, num_total_base_types)
+	else:
+		active_base_types = num_total_base_types
+
+	if level_data.has("stars"):
+		var stars = level_data.get("stars", [])
+		if typeof(stars) == TYPE_ARRAY and stars.size() >= 3:
+			star_1_score = int(stars[0])
+			star_2_score = int(stars[1])
+			star_3_score = int(stars[2])
+
+	debug_source_color = clampi(debug_source_color, 0, active_base_types - 1)
+	update_board_layout()
+
+func build_board_from_loaded_level(level_data: Dictionary):
+	clear_board_state()
+	cell_active_grid = make_2d_int_array(1)
+	ice_layers_grid = make_2d_int_array(0)
+	mold_grid = make_2d_int_array(0)
+
+	var layout = level_data.get("layout", [])
+	if typeof(layout) != TYPE_ARRAY:
+		initial_fill_board()
+		return
+
+	for row in range(0, mini(height, layout.size())):
+		var row_data = layout[row]
+		if typeof(row_data) != TYPE_ARRAY:
+			continue
+		for column in range(0, mini(width, row_data.size())):
+			var code = int(row_data[column])
+			if code == 0:
+				cell_active_grid[column][row] = 0
+				grid[column][row] = null
+				piece_array[column][row] = null
+				continue
+
+			cell_active_grid[column][row] = 1
+			var base_type = get_random_base_type(column, row, true)
+			var force_visual = ""
+			var ice_layers = 0
+			var mold_enabled = false
+
+			if code >= 10 and code < 10 + num_total_base_types:
+				base_type = code - 10
+			elif code == 2:
+				ice_layers = 1
+			elif code == 3:
+				ice_layers = mini(max_ice_layers, 2)
+			elif code == 4:
+				mold_enabled = true
+			elif code == 98:
+				force_visual = "row_bomb" if randf() < 0.5 else "col_bomb"
+			elif code == 99:
+				force_visual = "area_bomb"
+			elif code == 100:
+				force_visual = "color_bomb"
+
+			if force_visual == "":
+				create_cheese_sprite(column, row, base_type)
+			else:
+				create_cheese_sprite(column, row, base_type, force_visual, base_type)
+
+			if piece_array[column][row] != null:
+				piece_array[column][row].set_ice_layers(ice_layers)
+				piece_array[column][row].set_mold(mold_enabled)
+			ice_layers_grid[column][row] = ice_layers
+			mold_grid[column][row] = 1 if mold_enabled else 0
+
+	for i in width:
+		for j in height:
+			if cell_active_grid[i][j] <= 0:
+				continue
+			if piece_array[i][j] == null:
+				var fallback_type = get_random_base_type(i, j, true)
+				create_cheese_sprite(i, j, fallback_type)
+
+	refresh_all_piece_obstacle_tints()
+	update_goal_ui()
+
+func maybe_show_json_level_tutorial(level_data: Dictionary):
+	if ui == null:
+		return
+	if typeof(level_data) != TYPE_DICTIONARY:
+		return
+
+	var tutorial_data = level_data.get("tutorial", {})
+	if typeof(tutorial_data) != TYPE_DICTIONARY:
+		return
+
+	var tutorial_id = str(tutorial_data.get("id", "level_%03d" % current_level_id))
+	if tutorial_id == "":
+		tutorial_id = "level_%03d" % current_level_id
+
+	var save_system = get_save_system()
+	if save_system != null and save_system.has_seen_tutorial(tutorial_id):
+		return
+
+	var title = str(tutorial_data.get("title", "Tutorial"))
+	var body = str(tutorial_data.get("body", ""))
+	if body == "":
+		return
+
+	var board_center = board_origin + Vector2(width * cell_size * 0.5, height * cell_size * 0.5)
+	ui.show_tutorial_hint(title, body, to_global(board_center))
+
+	if save_system != null:
+		save_system.mark_tutorial_seen(tutorial_id)
+		save_system.save()
+
 func start_level(level_id: int):
 	current_level_id = maxi(1, level_id)
-	configure_level_difficulty(current_level_id)
+	loaded_level_data = load_level_data_json(current_level_id)
+	loaded_level_from_json = not loaded_level_data.is_empty()
+
+	if loaded_level_from_json:
+		apply_loaded_level_config(loaded_level_data)
+	else:
+		configure_level_difficulty(current_level_id)
+		cell_active_grid = make_2d_int_array(1)
+		update_board_layout()
+
 	setup_level_session()
-	clear_board_state()
-	initial_fill_board()
-	ensure_board_has_possible_moves()
-	maybe_prepare_tutorial_level()
+	if loaded_level_from_json:
+		build_board_from_loaded_level(loaded_level_data)
+		if not has_possible_moves():
+			initial_fill_board(true)
+	else:
+		clear_board_state()
+		initial_fill_board()
+		ensure_board_has_possible_moves()
+		maybe_prepare_tutorial_level()
+		setup_level_obstacles()
+	setup_bring_down_targets()
+	if loaded_level_from_json:
+		maybe_show_json_level_tutorial(loaded_level_data)
 	arm_all_bombs()
 
 	var analytics = get_analytics()
@@ -212,36 +522,86 @@ func maybe_prepare_tutorial_level():
 		attempts += 1
 
 	if tutorial_id == "chilli":
+		var move_a = to_global(grid_to_local(3, 4))
+		var move_b = to_global(grid_to_local(3, 3))
 		ui.show_tutorial_hint(
 			"Tutorial: Ogniste Chilli",
 			"Ułóż 4 sery w linii, aby stworzyć Chilli Cheese. Spróbuj swapnąć środkowe pola!",
-			to_global(anchor)
+			to_global(anchor),
+			move_a,
+			move_b
 		)
 	else:
+		var move_a2 = to_global(grid_to_local(4, 4))
+		var move_b2 = to_global(grid_to_local(3, 4))
 		ui.show_tutorial_hint(
 			"Tutorial: Camembert",
 			"Zrób kształt L lub T z jednego koloru, aby stworzyć wybuchowego Camemberta.",
-			to_global(anchor)
+			to_global(anchor),
+			move_a2,
+			move_b2
 		)
 
 	save_system.mark_tutorial_seen(tutorial_id)
 	save_system.save()
 
+func get_bring_down_candidate_cells() -> Array:
+	var candidates: Array = []
+	var max_row = maxi(0, int(floor(height * 0.5)))
+	for i in width:
+		for j in range(0, max_row):
+			var piece: Piece = piece_array[i][j]
+			if piece == null:
+				continue
+			if piece.is_obstacle_locked():
+				continue
+			if piece.is_bomb():
+				continue
+			candidates.append(Vector2(i, j))
+	return candidates
+
+func setup_bring_down_targets():
+	bring_down_targets_spawned = 0
+	if level_goal_type != "bring_down":
+		return
+
+	var candidates = get_bring_down_candidate_cells()
+	candidates.shuffle()
+	var amount = mini(goal_target, candidates.size())
+
+	for idx in range(0, amount):
+		var p: Vector2 = candidates[idx]
+		var x = int(p.x)
+		var y = int(p.y)
+		create_cheese_sprite(x, y, DROP_GOAL_PIECE_TYPE, "drop_goal")
+		bring_down_targets_spawned += 1
+
+	goal_target = maxi(goal_target, bring_down_targets_spawned)
+	update_goal_ui()
+
 func setup_level_session():
 	level_finished = false
 	level_won = false
+	goal_cleanup_performed = false
+	goal_reached_this_level = false
 	moves_left = moves_limit
 	goal_progress = 0
+	bring_down_targets_spawned = 0
+	mold_spread_done_this_move = false
 	is_animating = false
 	is_resolving_move = false
 	first_touch = Vector2(-1, -1)
 	last_swap = Vector2(-1, -1)
 	cascade_depth = 0
 	max_combo_in_move = 1
+	reset_idle_hint_timer()
 
 	if ui != null:
 		ui.reset_score(0)
 		ui.hide_level_result()
+		ui.hide_tutorial_hint()
+		ui.hide_hint_move()
+		ui.set_star_thresholds(star_1_score, star_2_score, star_3_score)
 		ui.set_moves_left(moves_left)
 		ui.set_goal_text(get_goal_status_text())
 
@@ -279,7 +639,21 @@ func refresh_debug_menu_text():
 		+ "3: Spawn Mozzarella at mouse\n" \
 		+ "Q / E: Change bomb source color (current: " + color_name + ")\n" \
 		+ "F5: Clean initial fill (no start matches)\n" \
-		+ "F6: Arm all bombs"
+		+ "F6: Arm all bombs\n" \
+		+ "F7: Reset progresu"
+
+func reset_progress_and_restart_level():
+	var save_system = get_save_system()
+	if save_system == null:
+		return
+
+	save_system.reset_save()
+	save_system.set_setting("selected_level", 1)
+	save_system.save()
+
+	current_level_id = 1
+	start_level(1)
+	persist_progress(false)
 
 func get_mouse_grid_cell() -> Vector2:
 	var mouse_pos = get_viewport().get_mouse_position()
@@ -334,10 +708,132 @@ func get_stars_for_score(score: int) -> int:
 func get_goal_status_text() -> String:
 	if level_goal_type == "clear_color":
 		var color_name = DEBUG_COLOR_NAMES[goal_color_type]
-		return "Poziom " + str(current_level_id) + " | Cel: Usuń " + str(goal_progress) + "/" + str(goal_target) + " (" + color_name + ")"
+		var done = " ✅" if goal_progress >= goal_target else ""
+		return "Poziom " + str(current_level_id) + " | Cel: Usuń " + str(goal_progress) + "/" + str(goal_target) + " (" + color_name + ")" + done
+	if level_goal_type == "bring_down":
+		var done_drop = " ✅" if goal_progress >= goal_target else ""
+		return "Poziom " + str(current_level_id) + " | Cel: Zrzuć sery " + str(goal_progress) + "/" + str(goal_target) + done_drop
+	if level_goal_type == "clear_ice":
+		var done_ice = " ✅" if goal_progress >= goal_target else ""
+		return "Poziom " + str(current_level_id) + " | Cel: Rozbij lód " + str(goal_progress) + "/" + str(goal_target) + done_ice
+	if level_goal_type == "clear_mold":
+		var done_mold = " ✅" if goal_progress >= goal_target else ""
+		return "Poziom " + str(current_level_id) + " | Cel: Oczyść pleśń " + str(goal_progress) + "/" + str(goal_target) + done_mold
 
 	var current_score = ui.score if ui != null else 0
-	return "Poziom " + str(current_level_id) + " | Cel: Wynik " + str(current_score) + "/" + str(goal_target)
+	var done_score = " ✅" if current_score >= goal_target else ""
+	return "Poziom " + str(current_level_id) + " | Cel: Wynik " + str(current_score) + "/" + str(goal_target) + done_score
+
+func collect_remaining_armed_specials() -> Array:
+	var out: Array = []
+	for i in width:
+		for j in height:
+			var piece: Piece = piece_array[i][j]
+			if piece == null:
+				continue
+			if piece.is_bomb() and not piece.just_spawned_bomb:
+				out.append(Vector2(i, j))
+	return out
+
+func get_random_base_cells() -> Array:
+	var out: Array = []
+	for i in width:
+		for j in height:
+			var piece: Piece = piece_array[i][j]
+			if piece == null:
+				continue
+			if piece.is_bomb():
+				continue
+			out.append(Vector2(i, j))
+	out.shuffle()
+	return out
+
+func spawn_endgame_special_at(cell: Vector2):
+	var x = int(cell.x)
+	var y = int(cell.y)
+	var piece: Piece = piece_array[x][y]
+	if piece == null:
+		return
+
+	var source_color = get_piece_color_type(piece)
+	if source_color < 0:
+		source_color = randi() % active_base_types
+
+	var roll = randi() % 100
+	if roll < 80:
+		var mode = "row_bomb" if randi() % 2 == 0 else "col_bomb"
+		create_cheese_sprite(x, y, CHILLI_BOMB_TYPE, mode, source_color)
+	else:
+		create_cheese_sprite(x, y, CAMEMBERT_BOMB_TYPE, "area_bomb", source_color)
+
+	var spawned: Piece = piece_array[x][y]
+	if spawned != null:
+		spawned.arm_bomb()
+
+func trigger_goal_finish_bonus() -> bool:
+	if goal_cleanup_performed:
+		return false
+	if not is_goal_completed():
+		return false
+	if not goal_reached_this_level:
+		goal_reached_this_level = true
+		persist_progress(true)
+
+	goal_cleanup_performed = true
+	var remaining_moves = moves_left
+	moves_left = 0
+	if ui != null:
+		ui.set_moves_left(0)
+
+	var random_cells = get_random_base_cells()
+	var bombs_to_trigger: Array = collect_remaining_armed_specials()
+	var convert_count = mini(remaining_moves, random_cells.size())
+
+	for i in range(0, convert_count):
+		spawn_endgame_special_at(random_cells[i])
+		add_cell_unique(bombs_to_trigger, random_cells[i])
+
+	if ui != null:
+		ui.show_event_text("FINAŁ! BONUS ZA RUCHY", get_viewport_rect().size * 0.5 + Vector2(-145, -10), Color(1.0, 0.9, 0.3))
+
+	if bombs_to_trigger.size() > 0:
+		destroy_matches(bombs_to_trigger)
+		return true
+
+	return false
+
+func process_bring_down_deliveries() -> bool:
+	if level_goal_type != "bring_down":
+		return false
+
+	var row = height - 1
+	var delivered: Array = []
+
+	for i in width:
+		var piece: Piece = piece_array[i][row]
+		if piece != null and piece.is_bring_down_target:
+			delivered.append(Vector2(i, row))
+
+	if delivered.size() == 0:
+		return false
+
+	for cell in delivered:
+		var x = int(cell.x)
+		var y = int(cell.y)
+		var piece: Piece = piece_array[x][y]
+		if piece == null:
+			continue
+
+		goal_progress += 1
+		if ui != null:
+			ui.show_event_text("DOSTAWA!", to_global(piece.position) + Vector2(-18, -16), Color(0.55, 1.0, 0.95))
+
+		piece.destroy()
+		piece_array[x][y] = null
+		grid[x][y] = null
+
+	update_goal_ui()
+	return true
 
 func update_goal_ui():
 	if ui != null:
@@ -347,9 +843,18 @@ func consume_move():
 	moves_left = maxi(0, moves_left - 1)
 	if ui != null:
 		ui.set_moves_left(moves_left)
+		ui.hide_tutorial_hint()
+		ui.hide_hint_move()
+	hint_visible = false
 
 func is_goal_completed() -> bool:
 	if level_goal_type == "clear_color":
+		return goal_progress >= goal_target
+	if level_goal_type == "bring_down":
+		return goal_progress >= goal_target
+	if level_goal_type == "clear_ice":
+		return goal_progress >= goal_target
+	if level_goal_type == "clear_mold":
 		return goal_progress >= goal_target
 
 	var current_score = ui.score if ui != null else 0
@@ -390,11 +895,7 @@ func finish_level(win: bool):
 func on_level_result_acknowledged():
 	if not level_finished:
 		return
-
-	if level_won:
-		start_level(current_level_id + 1)
-	else:
-		start_level(current_level_id)
+	get_tree().change_scene_to_file("res://Scenes/level_map.tscn")
 
 func persist_progress(level_completed: bool):
 	var save_system = get_save_system()
@@ -505,23 +1006,19 @@ func generate_fallback_sound(player: AudioStreamPlayer, event_name: String):
 
 		playback.push_frame(Vector2(sample, sample))
 
-func make_2d_array() -> Array:
-	var array = []
-	for i in width:
-		array.append([])
-		for j in height:
-			array[i].append(null)
-	return array
-
 func spawn_cheeses():
 	initial_fill_board()
 
-func initial_fill_board():
+func initial_fill_board(keep_obstacles: bool = false):
 	var attempt = 0
 	while attempt < max_initial_fill_attempts:
-		clear_board_state()
+		clear_board_state(not keep_obstacles)
 		for i in width:
 			for j in height:
+				if not is_cell_active(i, j):
+					grid[i][j] = null
+					piece_array[i][j] = null
+					continue
 				var random_type = get_random_base_type(i, j, true)
 				grid[i][j] = random_type
 				create_cheese_sprite(i, j, random_type)
@@ -533,7 +1030,7 @@ func initial_fill_board():
 
 	push_warning("Board: could not generate fully clean initial board after retries.")
 
-func clear_board_state():
+func clear_board_state(reset_obstacles: bool = true):
 	for i in width:
 		for j in height:
 			if piece_array.size() > i and piece_array[i].size() > j:
@@ -542,14 +1039,214 @@ func clear_board_state():
 
 	grid = make_2d_array()
 	piece_array = make_2d_array()
+	if reset_obstacles:
+		cell_active_grid = make_2d_int_array(1)
+		ice_layers_grid = make_2d_int_array(0)
+		mold_grid = make_2d_int_array(0)
+
+func collect_all_cells() -> Array:
+	var out: Array = []
+	for i in width:
+		for j in height:
+			if not is_cell_active(i, j):
+				continue
+			out.append(Vector2(i, j))
+	return out
+
+func setup_level_obstacles():
+	ice_layers_grid = make_2d_int_array(0)
+	mold_grid = make_2d_int_array(0)
+
+	if level_goal_type == "clear_ice":
+		setup_ice_obstacles()
+	elif level_goal_type == "clear_mold":
+		setup_mold_obstacles()
+
+	refresh_all_piece_obstacle_tints()
+	update_goal_ui()
+
+func setup_ice_obstacles():
+	var total_capacity = width * height * maxi(1, max_ice_layers)
+	var requested_layers = clampi(goal_target, 1, total_capacity)
+	var cells = collect_all_cells()
+	cells.shuffle()
+
+	var remaining = requested_layers
+	for cell in cells:
+		if remaining <= 0:
+			break
+		var x = int(cell.x)
+		var y = int(cell.y)
+		ice_layers_grid[x][y] = 1
+		if piece_array[x][y] != null:
+			piece_array[x][y].set_ice_layers(1)
+		remaining -= 1
+
+	var safety = 0
+	while remaining > 0 and safety < total_capacity * 4:
+		safety += 1
+		var random_cell: Vector2 = cells[randi() % cells.size()]
+		var rx = int(random_cell.x)
+		var ry = int(random_cell.y)
+		if ice_layers_grid[rx][ry] >= max_ice_layers:
+			continue
+		ice_layers_grid[rx][ry] += 1
+		if piece_array[rx][ry] != null:
+			piece_array[rx][ry].set_ice_layers(int(ice_layers_grid[rx][ry]))
+		remaining -= 1
+
+	goal_target = requested_layers - remaining
+
+func setup_mold_obstacles():
+	var cells = collect_all_cells()
+	cells.shuffle()
+	var seed_count = mini(cells.size(), maxi(initial_mold_tiles, int(ceil(goal_target * 0.6))))
+
+	for idx in range(0, seed_count):
+		var cell: Vector2 = cells[idx]
+		var x = int(cell.x)
+		var y = int(cell.y)
+		mold_grid[x][y] = 1
+		if piece_array[x][y] != null:
+			piece_array[x][y].set_mold(true)
+
+	goal_target = maxi(goal_target, seed_count)
+
+func clear_mold_at(column: int, row: int) -> bool:
+	if not is_cell_active(column, row):
+		return false
+	var piece: Piece = piece_array[column][row]
+	if piece == null or not piece.is_mold:
+		return false
+	var result: Dictionary = piece.take_damage()
+	if bool(result.get("mold_removed", false)):
+		mold_grid[column][row] = 0
+		ice_layers_grid[column][row] = piece.ice_layers
+		refresh_piece_obstacle_tint(column, row)
+		return true
+	refresh_piece_obstacle_tint(column, row)
+	return false
+
+func chip_ice_at(column: int, row: int) -> bool:
+	if not is_cell_active(column, row):
+		return false
+	var piece: Piece = piece_array[column][row]
+	if piece == null or piece.ice_layers <= 0:
+		return false
+	var before_layers = piece.ice_layers
+	var result: Dictionary = piece.take_damage()
+	if int(result.get("ice_removed", 0)) <= 0:
+		return false
+	ice_layers_grid[column][row] = piece.ice_layers
+	if before_layers > 0 and piece.ice_layers <= 0:
+		piece.just_spawned_bomb = false
+	refresh_piece_obstacle_tint(column, row)
+	return true
+
+func damage_obstacle_at(column: int, row: int) -> bool:
+	if not is_cell_active(column, row):
+		return false
+	var piece: Piece = piece_array[column][row]
+	if piece == null or not piece.is_obstacle_locked():
+		return false
+
+	var result: Dictionary = piece.take_damage()
+	if not bool(result.get("changed", false)):
+		return false
+
+	var removed_ice = int(result.get("ice_removed", 0))
+	var removed_mold = bool(result.get("mold_removed", false))
+
+	if level_goal_type == "clear_ice" and removed_ice > 0:
+		goal_progress += removed_ice
+	if level_goal_type == "clear_mold" and removed_mold:
+		goal_progress += 1
+
+	ice_layers_grid[column][row] = piece.ice_layers
+	mold_grid[column][row] = 1 if piece.is_mold else 0
+
+	if removed_mold:
+		spawn_cheese_particles(piece.position, Color(0.56, 0.85, 0.5), 14, 180.0)
+	if removed_ice > 0:
+		spawn_cheese_particles(piece.position, Color(0.74, 0.9, 1.0), 12, 180.0)
+
+	refresh_piece_obstacle_tint(column, row)
+	return true
+
+func spread_mold_once():
+	if level_goal_type != "clear_mold":
+		return
+	if mold_spread_per_turn <= 0:
+		return
+
+	var candidates: Array = []
+	for i in width:
+		for j in height:
+			if not is_cell_active(i, j):
+				continue
+			var piece: Piece = piece_array[i][j]
+			if piece == null or not piece.is_mold:
+				continue
+			var neighbors = [Vector2(i + 1, j), Vector2(i - 1, j), Vector2(i, j + 1), Vector2(i, j - 1)]
+			for n in neighbors:
+				var nx = int(n.x)
+				var ny = int(n.y)
+				if not is_cell_active(nx, ny):
+					continue
+				var target_piece: Piece = piece_array[nx][ny]
+				if target_piece == null:
+					continue
+				if target_piece.is_mold:
+					continue
+				if target_piece.is_obstacle_locked() and not target_piece.is_mold:
+					continue
+				if target_piece.is_bomb():
+					continue
+				add_cell_unique(candidates, Vector2(nx, ny))
+
+	if candidates.size() == 0:
+		return
+
+	candidates.shuffle()
+	var spread_count = mini(mold_spread_per_turn, candidates.size())
+	for idx in range(0, spread_count):
+		var c: Vector2 = candidates[idx]
+		var cx = int(c.x)
+		var cy = int(c.y)
+		mold_grid[cx][cy] = 1
+		if piece_array[cx][cy] != null:
+			piece_array[cx][cy].set_mold(true)
+		refresh_piece_obstacle_tint(cx, cy)
+
+	if ui != null:
+		ui.show_event_text("PLEŚŃ ROŚNIE!", get_viewport_rect().size * 0.5 + Vector2(-90, -10), Color(0.58, 0.9, 0.52))
+
+func refresh_piece_obstacle_tint(column: int, row: int):
+	if not is_cell_active(column, row):
+		return
+	var piece: Piece = piece_array[column][row]
+	if piece == null:
+		return
+
+	if ice_layers_grid.size() > column and ice_layers_grid[column].size() > row:
+		piece.set_ice_layers(int(ice_layers_grid[column][row]))
+	if mold_grid.size() > column and mold_grid[column].size() > row:
+		piece.set_mold(int(mold_grid[column][row]) > 0)
+
+func refresh_all_piece_obstacle_tints():
+	for i in width:
+		for j in height:
+			refresh_piece_obstacle_tint(i, j)
 
 func get_random_base_type(column: int, row: int, avoid_start_matches: bool) -> int:
 	var random_type = randi() % active_base_types
 	if not avoid_start_matches:
 		return random_type
 
-	while is_match_at_start(column, row, random_type):
+	var attempts = 0
+	while is_match_at_start(column, row, random_type) and attempts < 10:
 		random_type = randi() % active_base_types
+		attempts += 1
 	return random_type
 
 func create_cheese_sprite(column: int, row: int, type: int, force_bomb_visual: String = "", source_color_type: int = -1):
@@ -572,9 +1269,13 @@ func create_cheese_sprite(column: int, row: int, type: int, force_bomb_visual: S
 		piece.setup(start_pos, MOZZARELLA_BOMB_TYPE, mozzarella_texture, cell_size)
 		piece.make_color_bomb_visual()
 		piece.just_spawned_bomb = true
+	elif force_bomb_visual == "drop_goal":
+		piece.setup(start_pos, DROP_GOAL_PIECE_TYPE, bring_down_placeholder_texture, cell_size)
+		piece.make_drop_goal_visual(bring_down_placeholder_texture)
+		piece.just_spawned_bomb = false
 	else:
 		piece.setup(start_pos, type, base_cheese_texture, cell_size)
-		piece.base_sprite.modulate = base_cheese_colors[type]
+		piece.set_base_color(base_cheese_colors[type])
 		piece.just_spawned_bomb = false
 
 	if source_color_type >= 0 and source_color_type < num_total_base_types:
@@ -583,6 +1284,7 @@ func create_cheese_sprite(column: int, row: int, type: int, force_bomb_visual: S
 	add_child(piece)
 	piece_array[column][row] = piece
 	grid[column][row] = piece.type
+	refresh_piece_obstacle_tint(column, row)
 
 func get_piece_color_type(piece: Piece) -> int:
 	if piece == null:
@@ -603,7 +1305,16 @@ func is_match_at_start(column: int, row: int, type: int) -> bool:
 	return false
 
 func _input(event):
+	if event is InputEventMouseButton and event.pressed:
+		reset_idle_hint_timer()
 	if event is InputEventKey and event.pressed and not event.echo:
+		reset_idle_hint_timer()
+
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_ESCAPE:
+			get_tree().change_scene_to_file("res://Scenes/level_map.tscn")
+			return
+
 		if event.keycode == KEY_F3:
 			debug_enabled = not debug_enabled
 			if debug_layer != null:
@@ -634,11 +1345,14 @@ func _input(event):
 				return
 			if event.keycode == KEY_F5:
 				if not is_animating:
-					initial_fill_board()
+					initial_fill_board(true)
 					arm_all_bombs()
 				return
 			if event.keycode == KEY_F6:
 				arm_all_bombs()
+				return
+			if event.keycode == KEY_F7:
+				reset_progress_and_restart_level()
 				return
 
 	if level_finished:
@@ -661,13 +1375,21 @@ func _input(event):
 			return
 		var column = int(local_pos.x / cell_size)
 		var row = int(local_pos.y / cell_size)
-		if is_in_grid(column, row):
+		if is_cell_active(column, row):
+			if is_locked_piece_at(column, row):
+				first_touch = Vector2(-1, -1)
+				return
 			if first_touch == Vector2(-1, -1):
 				first_touch = Vector2(column, row)
 				if piece_array[column][row] != null:
 					piece_array[column][row].base_sprite.modulate.a = 0.5
 			else:
 				var last_touch = Vector2(column, row)
+				if is_locked_piece_at(int(first_touch.x), int(first_touch.y)) or is_locked_piece_at(int(last_touch.x), int(last_touch.y)):
+					if piece_array[first_touch.x][first_touch.y] != null:
+						piece_array[first_touch.x][first_touch.y].base_sprite.modulate.a = 1.0
+					first_touch = Vector2(-1, -1)
+					return
 				if piece_array[first_touch.x][first_touch.y] != null:
 					piece_array[first_touch.x][first_touch.y].base_sprite.modulate.a = 1.0
 				if is_adjacent(first_touch, last_touch):
@@ -676,16 +1398,34 @@ func _input(event):
 				first_touch = Vector2(-1, -1)
 
 func is_in_grid(column: int, row: int) -> bool:
-	return column >= 0 and column < width and row >= 0 and row < height
+	return BoardGridHelper.is_in_grid(column, row, width, height)
+
+func is_cell_active(column: int, row: int) -> bool:
+	return BoardGridHelper.is_cell_active(column, row, cell_active_grid, width, height)
+
+func is_locked_piece_at(column: int, row: int) -> bool:
+	if not is_cell_active(column, row):
+		return false
+	var piece: Piece = piece_array[column][row]
+	if piece == null:
+		return false
+	return piece.is_obstacle_locked() or piece.is_bring_down_target
 
 func is_adjacent(pos1: Vector2, pos2: Vector2) -> bool:
-	var difference = pos1 - pos2
-	return abs(difference.x) + abs(difference.y) == 1
+	return BoardGridHelper.is_adjacent(pos1, pos2)
+
+func make_2d_array() -> Array:
+	return BoardGridHelper.make_2d_array(width, height)
+
+func make_2d_int_array(default_value: int = 0) -> Array:
+	return BoardGridHelper.make_2d_int_array(width, height, default_value)
 
 func would_swap_trigger_bomb(pos1: Vector2, pos2: Vector2) -> bool:
 	var p1: Piece = piece_array[int(pos1.x)][int(pos1.y)]
 	var p2: Piece = piece_array[int(pos2.x)][int(pos2.y)]
 	if p1 == null or p2 == null:
+		return false
+	if p1.is_obstacle_locked() or p2.is_obstacle_locked():
 		return false
 
 	for pair in [[p1, p2], [p2, p1]]:
@@ -720,6 +1460,8 @@ func would_swap_create_match(pos1: Vector2, pos2: Vector2) -> bool:
 
 	if piece_array[x1][y1] == null or piece_array[x2][y2] == null:
 		return false
+	if piece_array[x1][y1].is_obstacle_locked() or piece_array[x2][y2].is_obstacle_locked():
+		return false
 
 	var temp_grid = grid[x1][y1]
 	grid[x1][y1] = grid[x2][y2]
@@ -744,14 +1486,18 @@ func would_swap_create_match(pos1: Vector2, pos2: Vector2) -> bool:
 func has_possible_moves() -> bool:
 	for i in width:
 		for j in height:
+			if not is_cell_active(i, j):
+				continue
+			if is_locked_piece_at(i, j):
+				continue
 			var pos = Vector2(i, j)
 			var right = Vector2(i + 1, j)
 			var down = Vector2(i, j + 1)
 
-			if is_in_grid(int(right.x), int(right.y)) and would_swap_create_match(pos, right):
+			if is_cell_active(int(right.x), int(right.y)) and not is_locked_piece_at(int(right.x), int(right.y)) and would_swap_create_match(pos, right):
 				return true
 
-			if is_in_grid(int(down.x), int(down.y)) and would_swap_create_match(pos, down):
+			if is_cell_active(int(down.x), int(down.y)) and not is_locked_piece_at(int(down.x), int(down.y)) and would_swap_create_match(pos, down):
 				return true
 
 	return false
@@ -759,7 +1505,7 @@ func has_possible_moves() -> bool:
 func ensure_board_has_possible_moves():
 	var attempts = 0
 	while not has_possible_moves() and attempts < max_initial_fill_attempts:
-		initial_fill_board()
+		initial_fill_board(true)
 		attempts += 1
 
 func reshuffle_if_no_moves():
@@ -771,14 +1517,20 @@ func reshuffle_if_no_moves():
 
 	var attempts = 0
 	while not has_possible_moves() and attempts < max_initial_fill_attempts:
-		initial_fill_board()
+		initial_fill_board(true)
 		attempts += 1
 
 	arm_all_bombs()
 
 func swap_pieces(pos1: Vector2, pos2: Vector2):
+	if is_locked_piece_at(int(pos1.x), int(pos1.y)) or is_locked_piece_at(int(pos2.x), int(pos2.y)):
+		is_animating = false
+		is_resolving_move = false
+		return
+
 	is_animating = true
 	is_resolving_move = true
+	mold_spread_done_this_move = false
 	cascade_depth = 0
 	max_combo_in_move = 1
 	var temp_type = grid[pos1.x][pos1.y]
@@ -995,30 +1747,32 @@ func get_swap_bomb_matches(pos1: Vector2, pos2: Vector2) -> Array:
 		if piece.is_row_bomb:
 			for k in width:
 				var p = Vector2(k, y)
-				if not p in matches:
+				if is_cell_active(int(p.x), int(p.y)) and not p in matches:
 					matches.append(p)
 
 		if piece.is_col_bomb:
 			for k in height:
 				var p = Vector2(x, k)
-				if not p in matches:
+				if is_cell_active(int(p.x), int(p.y)) and not p in matches:
 					matches.append(p)
 
 		if piece.is_area_bomb:
 			for ox in [-1, 0, 1]:
 				for oy in [-1, 0, 1]:
 					var p = Vector2(x + ox, y + oy)
-					if is_in_grid(p.x, p.y) and not p in matches:
+					if is_cell_active(int(p.x), int(p.y)) and not p in matches:
 						matches.append(p)
 
 	return matches
 
 func get_cell_match_color(column: int, row: int) -> int:
-	if not is_in_grid(column, row):
+	if not is_cell_active(column, row):
 		return -1
 
 	var piece: Piece = piece_array[column][row]
 	if piece == null:
+		return -1
+	if piece.is_obstacle_locked():
 		return -1
 
 	if piece.type >= 0 and piece.type < num_total_base_types:
@@ -1191,16 +1945,18 @@ func destroy_matches(matches: Array):
 					if bomb.is_row_bomb:
 						for k in width:
 							var p = Vector2(k, y)
-							if not p in matches: matches.append(p)
+							if is_cell_active(int(p.x), int(p.y)) and not p in matches:
+								matches.append(p)
 					if bomb.is_col_bomb:
 						for k in height:
 							var p = Vector2(x, k)
-							if not p in matches: matches.append(p)
+							if is_cell_active(int(p.x), int(p.y)) and not p in matches:
+								matches.append(p)
 					if bomb.is_area_bomb:
 						for ox in [-1, 0, 1]:
 							for oy in [-1, 0, 1]:
 								var p = Vector2(x + ox, y + oy)
-								if is_in_grid(p.x, p.y) and not p in matches:
+								if is_cell_active(int(p.x), int(p.y)) and not p in matches:
 									matches.append(p)
 
 	var center = get_matches_center(matches)
@@ -1218,12 +1974,18 @@ func destroy_matches(matches: Array):
 
 	ui.add_score(matches.size() * 10 * combo_multiplier)
 	update_goal_ui()
+	var destroyed_cells: Array = []
 	
 	for cell in matches:
 		var x = int(cell.x)
 		var y = int(cell.y)
+		if damage_obstacle_at(x, y):
+			continue
+
 		if piece_array[x][y] != null:
 			var p = piece_array[x][y]
+			if p.is_bring_down_target:
+				continue
 			if level_goal_type == "clear_color" and get_piece_color_type(p) == goal_color_type:
 				goal_progress += 1
 			var particle_color = p.base_sprite.modulate
@@ -1236,6 +1998,19 @@ func destroy_matches(matches: Array):
 			piece_array[x][y].destroy()
 			piece_array[x][y] = null
 			grid[x][y] = null
+			destroyed_cells.append(Vector2(x, y))
+
+	for destroyed in destroyed_cells:
+		var dx = int(destroyed.x)
+		var dy = int(destroyed.y)
+		var neighbors = [
+			Vector2(dx + 1, dy),
+			Vector2(dx - 1, dy),
+			Vector2(dx, dy + 1),
+			Vector2(dx, dy - 1),
+		]
+		for n in neighbors:
+			damage_obstacle_at(int(n.x), int(n.y))
 
 	update_goal_ui()
 			
@@ -1248,8 +2023,17 @@ func collapse_columns():
 	
 	for i in width:
 		for j in range(height - 1, -1, -1):
+			if not is_cell_active(i, j):
+				continue
 			if grid[i][j] == null:
 				for k in range(j - 1, -1, -1):
+					if not is_cell_active(i, k):
+						continue
+					if grid[i][k] == null:
+						continue
+					var source_piece: Piece = piece_array[i][k]
+					if source_piece != null and source_piece.is_obstacle_locked():
+						break
 					if grid[i][k] != null:
 						grid[i][j] = grid[i][k]
 						piece_array[i][j] = piece_array[i][k]
@@ -1266,6 +2050,8 @@ func collapse_columns():
 						
 	if has_collapsed and max_duration > 0.0:
 		await get_tree().create_timer(max_duration).timeout
+
+	refresh_all_piece_obstacle_tints()
 		
 	refill_columns()
 
@@ -1274,9 +2060,11 @@ func refill_columns():
 	
 	for i in width:
 		for j in range(height - 1, -1, -1):
+			if not is_cell_active(i, j):
+				continue
 			if grid[i][j] == null:
-				# Refill intentionally allows immediate matches to enable cascades.
-				var random_type = get_random_base_type(i, j, false)
+				# Avoid placing same colors adjacent to prevent confusion at board start
+				var random_type = get_random_base_type(i, j, true)
 				grid[i][j] = random_type
 				
 				var piece = Piece.new()
@@ -1286,7 +2074,7 @@ func refill_columns():
 				var start_y_pos = target_y_pos - (height * cell_size) 
 				
 				piece.setup(Vector2(x_pos, start_y_pos), random_type, base_cheese_texture, cell_size)
-				piece.base_sprite.modulate = base_cheese_colors[random_type]
+				piece.set_base_color(base_cheese_colors[random_type])
 				add_child(piece)
 				piece_array[i][j] = piece
 				
@@ -1297,12 +2085,27 @@ func refill_columns():
 				
 	if max_duration > 0.0:
 		await get_tree().create_timer(max_duration).timeout
+
+	refresh_all_piece_obstacle_tints()
 		
 	var new_matches = find_matches()
 	if new_matches.size() > 0:
 		var remaining_matches = check_for_bombs(new_matches)
 		destroy_matches(remaining_matches)
 	else:
+		if is_resolving_move and level_goal_type == "clear_mold" and not mold_spread_done_this_move and not is_goal_completed():
+			spread_mold_once()
+			mold_spread_done_this_move = true
+			update_goal_ui()
+
+		if trigger_goal_finish_bonus():
+			return
+
+		if process_bring_down_deliveries():
+			await get_tree().create_timer(destroy_delay).timeout
+			collapse_columns()
+			return
+
 		if moves_left > 0 and not is_goal_completed():
 			reshuffle_if_no_moves()
 
@@ -1310,12 +2113,8 @@ func refill_columns():
 			var board_center = board_origin + Vector2(width * cell_size * 0.5, height * cell_size * 0.5)
 			ui.show_combo_result(max_combo_in_move, to_global(board_center))
 
-		if is_goal_completed():
-			finish_level(true)
-			return
-
 		if is_resolving_move and moves_left <= 0:
-			finish_level(false)
+			finish_level(is_goal_completed())
 			return
 
 		arm_all_bombs()

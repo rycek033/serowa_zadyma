@@ -1,0 +1,27 @@
+{
+  "level_id": 4,
+  "grid_width": 8,
+  "grid_height": 8,
+  "moves": 22,
+  "active_colors": 5,
+  "goal": {
+    "type": "clear_ice",
+    "target": 10
+  },
+  "stars": [1100, 2100, 3200],
+  "tutorial": {
+    "id": "goal_clear_ice",
+    "title": "Tutorial: Lód",
+    "body": "Lód blokuje ser. Zbij najpierw warstwy lodu, wtedy ser znów da się przesuwać i dopasowywać."
+  },
+  "layout": [
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 2, 2, 1, 1, 2, 2, 1],
+    [1, 2, 1, 1, 1, 1, 2, 1],
+    [1, 1, 1, 3, 3, 1, 1, 1],
+    [1, 1, 1, 3, 3, 1, 1, 1],
+    [1, 2, 1, 1, 1, 1, 2, 1],
+    [1, 2, 2, 1, 1, 2, 2, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1]
+  ]
+}

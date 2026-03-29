@@ -1,0 +1,28 @@
+{
+  "level_id": 2,
+  "grid_width": 8,
+  "grid_height": 8,
+  "moves": 24,
+  "active_colors": 4,
+  "goal": {
+    "type": "clear_color",
+    "target": 12,
+    "color": 0
+  },
+  "stars": [900, 1700, 2600],
+  "tutorial": {
+    "id": "goal_clear_color",
+    "title": "Tutorial: Cel kolorów",
+    "body": "W tym poziomie czyścisz konkretny kolor sera. Każdy zniszczony ser celu zwiększa postęp zadania."
+  },
+  "layout": [
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1]
+  ]
+}

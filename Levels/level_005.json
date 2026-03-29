@@ -1,0 +1,27 @@
+{
+  "level_id": 5,
+  "grid_width": 8,
+  "grid_height": 8,
+  "moves": 21,
+  "active_colors": 5,
+  "goal": {
+    "type": "clear_mold",
+    "target": 10
+  },
+  "stars": [1200, 2300, 3500],
+  "tutorial": {
+    "id": "goal_clear_mold",
+    "title": "Tutorial: Pleśń",
+    "body": "Pleśń to blok statyczny. Czyść ją obrażeniami od sąsiednich zniszczeń i nie pozwól, by przejęła planszę."
+  },
+  "layout": [
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 4, 1, 1, 4, 1, 1],
+    [1, 4, 1, 1, 1, 1, 4, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 4, 4, 1, 1, 1],
+    [1, 1, 1, 4, 4, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1]
+  ]
+}

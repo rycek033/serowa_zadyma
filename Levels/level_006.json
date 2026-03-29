@@ -1,0 +1,28 @@
+{
+  "level_id": 6,
+  "grid_width": 8,
+  "grid_height": 8,
+  "moves": 20,
+  "active_colors": 5,
+  "goal": {
+    "type": "clear_color",
+    "target": 14,
+    "color": 3
+  },
+  "stars": [1300, 2500, 3800],
+  "tutorial": {
+    "id": "layout_holes_intro",
+    "title": "Nowy układ planszy",
+    "body": "Od tego etapu pojawiają się zablokowane pola (dziury). Planuj ruchy, bo kształt planszy wpływa na spadanie serów."
+  },
+  "layout": [
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 0, 0, 1, 1, 1],
+    [1, 1, 1, 0, 0, 1, 1, 1],
+    [1, 1, 1, 0, 0, 1, 1, 1],
+    [1, 1, 1, 0, 0, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1]
+  ]
+}

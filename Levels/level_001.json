@@ -1,0 +1,27 @@
+{
+  "level_id": 1,
+  "grid_width": 8,
+  "grid_height": 8,
+  "moves": 26,
+  "active_colors": 4,
+  "goal": {
+    "type": "score",
+    "target": 1300
+  },
+  "stars": [700, 1300, 2100],
+  "tutorial": {
+    "id": "intro_basics",
+    "title": "Tutorial: Podstawy",
+    "body": "Łącz 3+ sery tego samego koloru. Każdy ruch zużywa 1 punkt ruchu. Zrób wymagany wynik, zanim skończą się ruchy."
+  },
+  "layout": [
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1]
+  ]
+}
